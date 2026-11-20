@@ -39,6 +39,7 @@ const npmLsReplacementPath = join(projectTestDataPath, 'npm-ls_replacement')
 const npmLsReplacement = {
   brokenJson: join(npmLsReplacementPath, 'broken-json.js'),
   checkArgs: join(npmLsReplacementPath, 'check-args.js'),
+  collectedResults: join(npmLsReplacementPath, 'collected-results.js'),
   demoResults: join(npmLsReplacementPath, 'demo-results.js'),
   justExit: join(npmLsReplacementPath, 'just-exit.js'),
   justExitCmd: join(npmLsReplacementPath, 'just-exit.cmd'),

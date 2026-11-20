@@ -24,9 +24,32 @@ import { PackageURL, PurlQualifierNames } from "packageurl-js"
 
 import {
   isString,
-  npmResolvedIgnoreMatcher, npmResolvedVcsMatcher
+  npmResolvedIgnoreMatcher, npmResolvedVcsMatcher,
+  tryRemoveSecretsFromUrl
 } from "./_helpers";
 import type {PackageData} from "./_types"
+
+
+/**
+ * Sanitize a URL before it is baked into a PURL qualifier.
+ *
+ * Reuses `tryRemoveSecretsFromUrl` so the semantics stay aligned with the
+ * external references: the password is stripped, the username is kept.
+ * Values that carry no password (or are not parseable as URLs) are returned
+ * byte-identical, so PURLs of credential-free components stay untouched.
+ */
+function sanitizeUrlForPurlQualifier (url: string): string {
+  try {
+    if (new URL(url).password === '') {
+      // no password -> no secrets -> keep the value byte-identical
+      return url
+    }
+  } catch {
+    // not parseable as URL -> nothing to strip reliably -> keep as-is
+    return url
+  }
+  return tryRemoveSecretsFromUrl(url)
+}
 
 
 export class PackageUrlFactory {
@@ -49,9 +72,9 @@ export class PackageUrlFactory {
     const qualifiers: PurlQualifiers = {}
     if ( isString(data.resolved) && !npmResolvedIgnoreMatcher.test(data.resolved)) {
       if (npmResolvedVcsMatcher.test(data.resolved)) {
-        qualifiers[PurlQualifierNames.VcsUrl] = data.resolved
+        qualifiers[PurlQualifierNames.VcsUrl] = sanitizeUrlForPurlQualifier(data.resolved)
       } else if (!FromNodePackageJsonUtils.defaultRegistryMatcher.test(data.resolved)) {
-        qualifiers[PurlQualifierNames.DownloadUrl] = data.resolved
+        qualifiers[PurlQualifierNames.DownloadUrl] = sanitizeUrlForPurlQualifier(data.resolved)
       }
     }
 
@@ -89,11 +112,14 @@ export class PackageUrlFactory {
     const { tarball } = packageJson.dist ?? {}
     if ( isString(tarball) && tarball.length > 5 ) {
       if (!FromNodePackageJsonUtils.defaultRegistryMatcher.test(tarball)) {
-        qualifiers[PurlQualifierNames.DownloadUrl] = tarball
+        qualifiers[PurlQualifierNames.DownloadUrl] = sanitizeUrlForPurlQualifier(tarball)
       }
     } else if ( typeof packageJson.repository === 'object' ) {
       try {
         const url = new URL(packageJson.repository.url)
+        // strip deployment credentials, keep the username --
+        // same semantics as `tryRemoveSecretsFromUrl`
+        url.password = ''
         /* @ts-expect-error -- missing type docs */
         const subdir = packageJson.repository.directory /* eslint-disable-line @typescript-eslint/no-unsafe-assignment -- ack */
         if (isString(subdir)) {

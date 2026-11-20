@@ -110,4 +110,110 @@ describe('integration.cli.from-collected', () => {
       }, cliRunTestTimeout)
     })
   })
+
+  describe('with prepared npm-ls containing credentials', () => {
+    const tmpRootRun = join(tmpRoot, 'with-credentials')
+    mkdirSync(tmpRootRun)
+
+    // constructed inputs: tests/_data/npm-ls_credentials/<subject>.json
+    // - registry-with-credentials: private registry mirror tarball URL carrying deployment credentials
+    // - git-with-credentials:      private git dependency URL carrying deployment credentials
+    // reading gauges:
+    // - zero hits of the deployment credential's password value in the whole result
+    // - presence of the username in the purl's source-address qualifier and in the external reference
+    const credentialCases = [
+      {
+        subject: 'registry-with-credentials',
+        qualifierName: 'download_url',
+        credentialedPackage: '@acme/mirror-lib',
+        username: 'deploy-mirror-bot',
+        passwordEncoded: 'mIrr0r%23p%40ss%2F2026',
+        sanitizedUrl: 'https://deploy-mirror-bot@npm-mirror.corp.example/@acme/mirror-lib/-/mirror-lib-1.4.2.tgz',
+        controlPackage: 'control-lib',
+        controlResolved: 'https://npm-mirror.corp.example/control-lib/-/control-lib-2.0.0.tgz',
+        publicPackage: 'public-lib',
+        publicPurl: 'pkg:npm/public-lib@3.1.0'
+      },
+      {
+        subject: 'git-with-credentials',
+        qualifierName: 'vcs_url',
+        credentialedPackage: 'git-lib',
+        username: 'git-deploy-bot',
+        passwordEncoded: 'g1t%3Ap%40ss%23word',
+        sanitizedUrl: 'git+https://git-deploy-bot@git.corp.example/acme/git-lib.git#v2.3.4',
+        controlPackage: 'plain-git-lib',
+        controlResolved: 'git+https://git.corp.example/acme/plain-git-lib.git#v1.0.0'
+      }
+    ]
+
+    test.each(credentialCases)('$subject', async (dd) => {
+      const logFileBase = join(tmpRootRun, dd.subject)
+      const cwd = dummyProjectsRoot
+
+      const { res, outFile, errFile } = runCLI([
+        '-vvv',
+        '--output-reproducible',
+        '--validate',
+        // no intention to test all the spec-versions nor all the output-formats - this would be not our scope.
+        '--spec-version', `${latestCdxSpecVersion}`,
+        // just use json with the latest most feature-rich version.
+        '--output-format', 'JSON',
+        // prevent file interaction in this synthetic scenario - they would not exist anyway
+        '--package-lock-only',
+        '--',
+        // just some dummy project
+        join('with-lockfile', 'package.json')
+      ], logFileBase, cwd, {
+        CT_SUBJECT: dd.subject,
+        npm_execpath: npmLsReplacement.collectedResults
+      })
+
+      try {
+        // exit code 0 implies that the result passed the strict validation (`--validate`)
+        await expect(res).resolves.toBe(0)
+      } catch (err) {
+        process.stderr.write(readFileSync(errFile))
+        throw err
+      }
+
+      const actualOutput = readFileSync(outFile, 'utf8')
+
+      // the deployment credential's password must not leak anywhere in the result,
+      // neither in its percent-encoded form nor decoded
+      expect(actualOutput).not.toContain(dd.passwordEncoded)
+      expect(actualOutput).not.toContain(decodeURIComponent(dd.passwordEncoded))
+
+      const bom = JSON.parse(actualOutput)
+      const fullName = (c) => `${c.group === undefined ? '' : `${c.group}/`}${c.name}`
+
+      // the purl's source-address qualifier carries the sanitized URL:
+      // password stripped, username kept
+      const component = bom.components.find((c) => fullName(c) === dd.credentialedPackage)
+      expect(component).toBeDefined()
+      const qualifierMatch = component.purl.match(new RegExp(`[?&]${dd.qualifierName}=([^&#]+)`))
+      expect(qualifierMatch).not.toBeNull()
+      expect(decodeURIComponent(qualifierMatch[1])).toBe(dd.sanitizedUrl)
+      expect(decodeURIComponent(qualifierMatch[1])).toContain(dd.username)
+
+      // the external reference keeps its existing sanitization: password stripped, username kept
+      const extRef = component.externalReferences.find((r) => r.type === 'distribution')
+      expect(extRef).toBeDefined()
+      expect(extRef.url).toBe(dd.sanitizedUrl)
+      expect(extRef.url).toContain(dd.username)
+
+      // credential-free components keep their purl byte-identical
+      const control = bom.components.find((c) => fullName(c) === dd.controlPackage)
+      expect(control).toBeDefined()
+      const controlQualifierMatch = control.purl.match(new RegExp(`[?&]${dd.qualifierName}=([^&#]+)`))
+      expect(controlQualifierMatch).not.toBeNull()
+      expect(decodeURIComponent(controlQualifierMatch[1])).toBe(dd.controlResolved)
+
+      // components from the default public registry get no source-address qualifier at all
+      if (dd.publicPackage !== undefined) {
+        const publicComponent = bom.components.find((c) => fullName(c) === dd.publicPackage)
+        expect(publicComponent).toBeDefined()
+        expect(publicComponent.purl).toBe(dd.publicPurl)
+      }
+    }, cliRunTestTimeout)
+  })
 })
